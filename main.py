@@ -12,22 +12,13 @@ import os
 def connect_db():
     return mysql.connector.connect(
         host="localhost",
-        port=3308,
+        port=3306,
         user="root",
         password="",
         database="qr_attendance_db"
     )
 
-def generate_qr():
-    student_id = entry_id.get().strip()
-    name = entry_name.get().strip()
-    email = entry_email.get().strip()
-    contact = entry_contact.get().strip()
-
-    if not student_id or not name or not email or not contact:
-        messagebox.showerror("Error", "Please enter all fields!")
-        return
-
+def generate_qr(student_id, name, email, contact):
     qr_data = f"{student_id},{name},{email},{contact}"
     qr = qrcode.make(qr_data)
 
@@ -101,6 +92,7 @@ def view_attendance():
 
     for row in df.itertuples(index=False):
         tree.insert("", "end", values=row)
+
 def fetch_students():
     db = connect_db()
     query = "SELECT student_id, name, email, contact FROM students"
@@ -114,6 +106,50 @@ def fetch_attendance_report():
     df = pd.read_sql(query, db)
     db.close()
     return df
+
+def add_student():
+    student_id = entry_new_id.get().strip()
+    name = entry_new_name.get().strip()
+    email = entry_new_email.get().strip()
+    contact = entry_new_contact.get().strip()
+
+    if not student_id or not name or not email or not contact:
+        messagebox.showerror("Error", "All fields are required!")
+        return
+
+    db = connect_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute("INSERT INTO students (student_id, name, email, contact) VALUES (%s, %s, %s, %s)",
+                       (student_id, name, email, contact))
+        db.commit()
+        messagebox.showinfo("Success", "Student added successfully!")
+        update_student_list()
+        generate_qr(student_id, name, email, contact)  # Generate QR code after adding student
+    except mysql.connector.Error as err:
+        messagebox.showerror("Database Error", f"Error: {err}")
+    finally:
+        db.close()
+
+def delete_student():
+    selected_item = student_tree.selection()
+    if not selected_item:
+        messagebox.showerror("Error", "Please select a student to delete!")
+        return
+
+    student_id = student_tree.item(selected_item, "values")[0]  # Get the Student ID of the selected row
+
+    db = connect_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute("DELETE FROM students WHERE student_id = %s", (student_id,))
+        db.commit()
+        messagebox.showinfo("Success", "Student deleted successfully!")
+        update_student_list()  # Refresh the student list
+    except mysql.connector.Error as err:
+        messagebox.showerror("Database Error", f"Error: {err}")
+    finally:
+        db.close()
 
 # UI Setup
 ctk.set_appearance_mode("dark")
@@ -141,32 +177,12 @@ left_frame.pack(side="left", fill="y", padx=10, pady=5)
 camera_label = ctk.CTkLabel(left_frame, text="QR Scanner", width=300, height=220, fg_color="gray", corner_radius=10)
 camera_label.pack(pady=10)
 
-# Input Fields
-ctk.CTkLabel(left_frame, text="Student ID:").pack(pady=2)
-entry_id = ctk.CTkEntry(left_frame)
-entry_id.pack(pady=2, padx=5, fill="x")
-
-ctk.CTkLabel(left_frame, text="Student Name:").pack(pady=2)
-entry_name = ctk.CTkEntry(left_frame)
-entry_name.pack(pady=2, padx=5, fill="x")
-
-ctk.CTkLabel(left_frame, text="Email:").pack(pady=2)
-entry_email = ctk.CTkEntry(left_frame)
-entry_email.pack(pady=2, padx=5, fill="x")
-
-ctk.CTkLabel(left_frame, text="Contact Number:").pack(pady=2)
-entry_contact = ctk.CTkEntry(left_frame)
-entry_contact.pack(pady=2, padx=5, fill="x")
-
+# Buttons in Tab 1
 frame_buttons = ctk.CTkFrame(left_frame)
 frame_buttons.pack(pady=10, fill="x")
 
-ctk.CTkButton(frame_buttons, text="Generate QR Code", command=generate_qr, corner_radius=20).pack(pady=3, padx=5, fill="x")
 ctk.CTkButton(frame_buttons, text="Scan QR Code", command=scan_qr, fg_color="green", corner_radius=20).pack(pady=3, padx=5, fill="x")
 ctk.CTkButton(frame_buttons, text="View Attendance", command=view_attendance, fg_color="orange", corner_radius=20).pack(pady=3, padx=5, fill="x")
-
-qr_label = ctk.CTkLabel(left_frame, text="QR Preview", width=150, height=150, fg_color="gray", corner_radius=10)
-qr_label.pack(pady=10)
 
 # Attendance Table in Tab 1
 right_frame = ctk.CTkFrame(main_frame)
@@ -199,50 +215,51 @@ def update_student_list():
         student_tree.insert("", "end", values=row)
 update_student_list()
 
-# Add Student Form
+# Add Student Form and QR Generation in Tab 2
 add_student_frame = ctk.CTkFrame(tab2)
 add_student_frame.pack(pady=10, padx=10, fill="x")
 
+# Student ID
 ctk.CTkLabel(add_student_frame, text="Student ID:").grid(row=0, column=0, padx=5, pady=5)
 entry_new_id = ctk.CTkEntry(add_student_frame)
 entry_new_id.grid(row=0, column=1, padx=5, pady=5)
 
+# Name
 ctk.CTkLabel(add_student_frame, text="Name:").grid(row=1, column=0, padx=5, pady=5)
 entry_new_name = ctk.CTkEntry(add_student_frame)
 entry_new_name.grid(row=1, column=1, padx=5, pady=5)
 
+# Email
 ctk.CTkLabel(add_student_frame, text="Email:").grid(row=2, column=0, padx=5, pady=5)
 entry_new_email = ctk.CTkEntry(add_student_frame)
 entry_new_email.grid(row=2, column=1, padx=5, pady=5)
 
+# Contact
 ctk.CTkLabel(add_student_frame, text="Contact:").grid(row=3, column=0, padx=5, pady=5)
 entry_new_contact = ctk.CTkEntry(add_student_frame)
 entry_new_contact.grid(row=3, column=1, padx=5, pady=5)
 
-def add_student():
-    student_id = entry_new_id.get().strip()
-    name = entry_new_name.get().strip()
-    email = entry_new_email.get().strip()
-    contact = entry_new_contact.get().strip()
-    if not student_id or not name or not email or not contact:
-        messagebox.showerror("Error", "All fields are required!")
-        return
-    db = connect_db()
-    cursor = db.cursor()
-    try:
-        cursor.execute("INSERT INTO students (student_id, name, email, contact) VALUES (%s, %s, %s, %s)",
-                       (student_id, name, email, contact))
-        db.commit()
-        messagebox.showinfo("Success", "Student added successfully!")
-        update_student_list()
-    except mysql.connector.Error as err:
-        messagebox.showerror("Database Error", f"Error: {err}")
-    finally:
-        db.close()
-
+# Add Student Button
 ctk.CTkButton(add_student_frame, text="Add Student", command=add_student).grid(row=4, columnspan=2, pady=10)
 
-# Attendance Report in Tab 3
+# Delete Selected Student Button
+ctk.CTkButton(add_student_frame, text="Delete Selected Student", command=delete_student, fg_color="red", corner_radius=20).grid(row=5, columnspan=2, pady=10)
+
+# QR Code Generation Section in Tab 2
+qr_frame = ctk.CTkFrame(tab2)
+qr_frame.pack(pady=10, padx=10, fill="both", expand=True)
+
+# Center the QR Code Section
+qr_inner_frame = ctk.CTkFrame(qr_frame)
+qr_inner_frame.pack(pady=10, padx=10, fill="both", expand=True)
+
+ctk.CTkLabel(qr_inner_frame, text="Generated QR Code", font=("Arial", 14, "bold")).pack(pady=5)
+
+# QR Preview Label
+qr_label = ctk.CTkLabel(qr_inner_frame, text="QR Preview", width=150, height=150, fg_color="gray", corner_radius=10)
+qr_label.pack(pady=10)
+
+# Attendance Report in Tab 3 (unchanged)
 report_frame = ctk.CTkFrame(tab3)
 report_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
