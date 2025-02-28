@@ -8,11 +8,10 @@ from PIL import Image, ImageTk
 from pyzbar.pyzbar import decode
 import os
 
-# Database Connection
 def connect_db():
     return mysql.connector.connect(
         host="localhost",
-        port=3306,
+        port=3308,
         user="root",
         password="",
         database="qr_attendance_db"
@@ -52,25 +51,45 @@ def scan_qr():
             return
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
         decoded_objs = decode(frame)
+
         for obj in decoded_objs:
             data = obj.data.decode("utf-8")
             student_id, name, email, contact = data.split(",")
 
             db = connect_db()
             cursor = db.cursor()
-            cursor.execute("INSERT INTO attendance (student_id) VALUES (%s)", (student_id,))
+
+            cursor.execute(
+                "SELECT action FROM attendance WHERE student_id = %s ORDER BY scan_time DESC LIMIT 1",
+                (student_id,)
+            )
+            record = cursor.fetchone()
+
+            if record and record[0] == "Time In":
+                cursor.execute(
+                    "INSERT INTO attendance (student_id, action) VALUES (%s, 'Time Out')",
+                    (student_id,)
+                )
+                action = "Time Out"
+            else:
+                cursor.execute(
+                    "INSERT INTO attendance (student_id, action) VALUES (%s, 'Time In')",
+                    (student_id,)
+                )
+                action = "Time In"
+
             db.commit()
+            cursor.close()
             db.close()
 
-            messagebox.showinfo("Success", f"Attendance recorded for {name}")
+            messagebox.showinfo("Success", f"Attendance {action} recorded for {name}")
 
             cap.release()
             return
 
         img = Image.fromarray(frame)
-        img = img.resize((300, 220))  # Adjust size
+        img = img.resize((300, 220))
         img_tk = ImageTk.PhotoImage(img)
 
         camera_label.img_tk = img_tk
@@ -79,11 +98,13 @@ def scan_qr():
 
     update_frame()
 
+
 def view_attendance():
     db = connect_db()
-    query = """SELECT a.student_id, s.name, s.email, s.contact, a.scan_time 
+    query = """SELECT a.student_id, s.name, s.email, s.contact, a.scan_time, a.action
                FROM attendance a 
-               JOIN students s ON a.student_id = s.student_id"""
+               JOIN students s ON a.student_id = s.student_id
+               WHERE DATE(a.scan_time) = CURDATE()"""
     df = pd.read_sql(query, db)
     db.close()
 
@@ -91,7 +112,7 @@ def view_attendance():
         tree.delete(item)
 
     for row in df.itertuples(index=False):
-        tree.insert("", "end", values=row)
+        tree.insert("", "end", values=(row.student_id, row.name, row.email, row.contact, row.scan_time, row.action))
 
 def fetch_students():
     db = connect_db()
@@ -102,10 +123,13 @@ def fetch_students():
 
 def fetch_attendance_report():
     db = connect_db()
-    query = "SELECT s.student_id, s.name, s.email, s.contact, COUNT(a.student_id) AS attendance_count FROM attendance a JOIN students s ON a.student_id = s.student_id GROUP BY a.student_id"
+    query = """SELECT s.student_id, s.name, s.email, s.contact, a.scan_time FROM attendance a JOIN students s 
+    ON a.student_id = s.student_id WHERE (a.student_id, a.scan_time) IN ( SELECT student_id, MAX(scan_time) 
+    FROM attendance GROUP BY student_id ) AND a.action = 'Time In'"""
     df = pd.read_sql(query, db)
     db.close()
     return df
+
 
 def add_student():
     student_id = entry_new_id.get().strip()
@@ -182,13 +206,15 @@ frame_buttons = ctk.CTkFrame(left_frame)
 frame_buttons.pack(pady=10, fill="x")
 
 ctk.CTkButton(frame_buttons, text="Scan QR Code", command=scan_qr, fg_color="green", corner_radius=20).pack(pady=3, padx=5, fill="x")
-ctk.CTkButton(frame_buttons, text="View Attendance", command=view_attendance, fg_color="orange", corner_radius=20).pack(pady=3, padx=5, fill="x")
+ctk.CTkButton(frame_buttons, text="View Attendance", command=lambda: (view_attendance(), fetch_attendance_report(),update_attendance_report()), fg_color="orange", corner_radius=20).pack(pady=3, padx=5, fill="x")
+total_label = ctk.CTkLabel(frame_buttons, text="Total Present: 0", font=("Arial", 14, "bold"))
+total_label.pack(pady=10)
 
 # Attendance Table in Tab 1
 right_frame = ctk.CTkFrame(main_frame)
 right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=5)
 
-columns = ("Student ID", "Name", "Email", "Contact", "Scan Time")
+columns = ("Student ID", "Name", "Email", "Contact", "Scan Time", "Action")
 tree = ttk.Treeview(right_frame, columns=columns, show="headings", height=15)
 
 for col in columns:
@@ -263,15 +289,12 @@ qr_label.pack(pady=10)
 report_frame = ctk.CTkFrame(tab3)
 report_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-columns = ("Student ID", "Name", "Email", "Contact", "Attendance Count")
+columns = ("Student ID", "Name", "Email", "Contact")
 report_tree = ttk.Treeview(report_frame, columns=columns, show="headings", height=10)
 for col in columns:
     report_tree.heading(col, text=col)
     report_tree.column(col, anchor="center")
 report_tree.pack(fill="both", expand=True)
-
-total_label = ctk.CTkLabel(tab3, text="Total Present: 0", font=("Arial", 14, "bold"))
-total_label.pack(pady=10)
 
 def update_attendance_report():
     for item in report_tree.get_children():
