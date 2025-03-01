@@ -36,6 +36,7 @@ def generate_qr(student_id, name, email, contact):
         messagebox.showerror("Database Error", f"Error: {err}")
     finally:
         db.close()
+        view_attendance()
 
     img = Image.open(qr_path).resize((150, 150))
     qr_img = ImageTk.PhotoImage(img)
@@ -97,14 +98,14 @@ def scan_qr():
         root.after(10, update_frame)
 
     update_frame()
-
+    view_attendance()
 
 def view_attendance():
     db = connect_db()
     query = """SELECT a.student_id, s.name, s.email, s.contact, a.scan_time, a.action
                FROM attendance a 
                JOIN students s ON a.student_id = s.student_id
-               WHERE DATE(a.scan_time) = CURDATE()"""
+               WHERE DATE(a.scan_time) = CURDATE() ORDER BY a.scan_time DESC"""
     df = pd.read_sql(query, db)
     db.close()
 
