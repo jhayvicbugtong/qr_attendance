@@ -123,9 +123,18 @@ def fetch_students():
 
 def fetch_attendance_report():
     db = connect_db()
-    query = """SELECT s.student_id, s.name, s.email, s.contact, a.scan_time FROM attendance a JOIN students s 
-    ON a.student_id = s.student_id WHERE (a.student_id, a.scan_time) IN ( SELECT student_id, MAX(scan_time) 
-    FROM attendance GROUP BY student_id ) AND a.action = 'Time In'"""
+    query = """WITH sorted AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY student_id ORDER BY scan_time DESC) AS rn
+    FROM attendance
+)
+SELECT s.student_id, s.name, s.email, s.contact, a.scan_time
+FROM sorted a
+JOIN students s ON a.student_id = s.student_id
+WHERE a.rn = 1 
+  AND a.action = 'Time In'
+  AND DATE(a.scan_time) = CURDATE();
+"""
     df = pd.read_sql(query, db)
     db.close()
     return df
@@ -144,14 +153,10 @@ def add_student():
     db = connect_db()
     cursor = db.cursor()
     try:
-        cursor.execute("INSERT INTO students (student_id, name, email, contact) VALUES (%s, %s, %s, %s)",
-                       (student_id, name, email, contact))
-        db.commit()
-        messagebox.showinfo("Success", "Student added successfully!")
         update_student_list()
-        generate_qr(student_id, name, email, contact)  # Generate QR code after adding student
+        generate_qr(student_id, name, email, contact)
     except mysql.connector.Error as err:
-        messagebox.showerror("Database Error", f"Error: {err}")
+         messagebox.showerror("Database Error", f"Error: {err}")
     finally:
         db.close()
 
@@ -302,8 +307,6 @@ def update_attendance_report():
     data = fetch_attendance_report()
     for row in data.itertuples(index=False):
         report_tree.insert("", "end", values=row)
-    total_label.configure(text=f"Total Present: {len(data)}")
-
+        total_label.configure(text=f"Total Present: {len(data)}")
 update_attendance_report()
-
 root.mainloop()
