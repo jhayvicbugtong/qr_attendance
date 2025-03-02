@@ -1,12 +1,16 @@
+import mysql.connector
+import os
+from tkinter import messagebox
+from tkinter import ttk
+import customtkinter as ctk
 import cv2
-import qrcode
+import mysql.connector
 import mysql.connector
 import pandas as pd
-import customtkinter as ctk
-from tkinter import messagebox, ttk
+import qrcode
 from PIL import Image, ImageTk
 from pyzbar.pyzbar import decode
-import os
+from tkcalendar import DateEntry
 
 def connect_db():
     return mysql.connector.connect(
@@ -19,6 +23,7 @@ def connect_db():
 
 def generate_qr(student_id, name, email, contact):
     qr_data = f"{student_id},{name},{email},{contact}"
+    print(student_id)
     qr = qrcode.make(qr_data)
 
     os.makedirs("qr_codes", exist_ok=True)
@@ -27,14 +32,17 @@ def generate_qr(student_id, name, email, contact):
 
     db = connect_db()
     cursor = db.cursor()
+
     try:
-        cursor.execute("INSERT INTO students (student_id, name, email, contact, qr_code) VALUES (%s, %s, %s, %s, %s)",
-                       (student_id, name, email, contact, qr_path))
+        cursor.execute("UPDATE students SET qr_code = %s WHERE student_id = %s", (qr_path, student_id))
         db.commit()
         messagebox.showinfo("Success", "QR Code generated and student added!")
+
     except mysql.connector.Error as err:
         messagebox.showerror("Database Error", f"Error: {err}")
+
     finally:
+        cursor.close()
         db.close()
         view_attendance()
 
@@ -42,6 +50,55 @@ def generate_qr(student_id, name, email, contact):
     qr_img = ImageTk.PhotoImage(img)
     qr_label.configure(image=qr_img)
     qr_label.image = qr_img
+
+def capture_image(student_id):
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        messagebox.showerror("Camera Error", "Could not access webcam")
+        return None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            messagebox.showerror("Camera Error", "Failed to capture image")
+            break
+
+        cv2.imshow("Capture Image (Press 'Space' to Capture, 'Esc' to Cancel)", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == 32:
+            img_path = f"student_images/{student_id}.png"
+            os.makedirs("student_images", exist_ok=True)
+            cv2.imwrite(img_path, frame)
+            messagebox.showinfo("Success", "Image captured successfully!")
+
+            db = connect_db()
+            cursor = db.cursor()
+
+            try:
+                cursor.execute("INSERT INTO studentPics(student_id, studentPic) VALUES (%s, %s)",
+                               (student_id, img_path))
+                db.commit()
+                messagebox.showinfo("Success", "QR Code generated and student added!")
+            except mysql.connector.Error as err:
+                messagebox.showerror("Database Error", f"Error: {err}")
+            finally:
+                cursor.close()
+                db.close()
+
+            break
+        elif key == 27:
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    img = Image.open(img_path).resize((150, 150))
+    student_img = ImageTk.PhotoImage(img)
+    img_label.configure(image=student_img)
+    img_label.image = student_img
+    return img_path
 
 def scan_qr():
     cap = cv2.VideoCapture(0)
@@ -61,6 +118,7 @@ def scan_qr():
             db = connect_db()
             cursor = db.cursor()
 
+            # Retrieve last attendance action
             cursor.execute(
                 "SELECT action FROM attendance WHERE student_id = %s ORDER BY scan_time DESC LIMIT 1",
                 (student_id,)
@@ -80,6 +138,13 @@ def scan_qr():
                 )
                 action = "Time In"
 
+            # Retrieve student's image path
+            cursor.execute(
+                "SELECT studentPic FROM studentPics WHERE student_id = %s",
+                (student_id,)
+            )
+            img_record = cursor.fetchone()
+
             db.commit()
             cursor.close()
             db.close()
@@ -87,6 +152,24 @@ def scan_qr():
             messagebox.showinfo("Success", f"Attendance {action} recorded for {name}")
 
             cap.release()
+
+            # Update labels with student information
+            name_label.configure(text=f"Name: {name}")
+            id_label.configure(text=f"ID: {student_id}")
+
+            # Display student image if found
+            if img_record and img_record[0]:
+                img_path = img_record[0]
+                try:
+                    img = Image.open(img_path)
+                    img = img.resize((150, 150))  # Adjust size as needed
+                    img_tk = ImageTk.PhotoImage(img)
+
+                    image_label.img_tk = img_tk
+                    image_label.configure(image=img_tk)
+                except Exception as e:
+                    messagebox.showerror("Image Error", f"Could not load image: {e}")
+
             return
 
         img = Image.fromarray(frame)
@@ -96,9 +179,9 @@ def scan_qr():
         camera_label.img_tk = img_tk
         camera_label.configure(image=img_tk)
         root.after(10, update_frame)
+        view_attendance()
 
     update_frame()
-    view_attendance()
 
 def view_attendance():
     db = connect_db()
@@ -140,26 +223,37 @@ WHERE a.rn = 1
     db.close()
     return df
 
-
 def add_student():
-    student_id = entry_new_id.get().strip()
+    date_birth = entry_birth.get_date().strftime("%Y-%m-%d")
     name = entry_new_name.get().strip()
     email = entry_new_email.get().strip()
     contact = entry_new_contact.get().strip()
 
-    if not student_id or not name or not email or not contact:
+    if not date_birth or not name or not email or not contact:
         messagebox.showerror("Error", "All fields are required!")
         return
 
     db = connect_db()
     cursor = db.cursor()
     try:
+        cursor.execute("INSERT INTO students (birth_date, name, email, contact) VALUES (%s, %s, %s, %s)",
+                       (date_birth, name, email, contact))
+        db.commit()
+
+        cursor.execute("SELECT student_id FROM students WHERE id = (SELECT MAX(id) FROM students)")
+        student_id = cursor.fetchone()
+        if student_id:
+            studentId = student_id[0]
+            capture_image(studentId)
+            generate_qr(studentId, name, email, contact)
         update_student_list()
-        generate_qr(student_id, name, email, contact)
+
     except mysql.connector.Error as err:
-         messagebox.showerror("Database Error", f"Error: {err}")
+        messagebox.showerror("Database Error", f"Error: {err}")
     finally:
+        cursor.close()
         db.close()
+
 
 def delete_student():
     selected_item = student_tree.selection()
@@ -213,7 +307,18 @@ frame_buttons.pack(pady=10, fill="x")
 
 ctk.CTkButton(frame_buttons, text="Scan QR Code", command=scan_qr, fg_color="green", corner_radius=20).pack(pady=3, padx=5, fill="x")
 ctk.CTkButton(frame_buttons, text="View Attendance", command=lambda: (view_attendance(), fetch_attendance_report(),update_attendance_report()), fg_color="orange", corner_radius=20).pack(pady=3, padx=5, fill="x")
-total_label = ctk.CTkLabel(frame_buttons, text="Total Present: 0", font=("Arial", 14, "bold"))
+
+image_label = ctk.CTkLabel(left_frame, text="img", width=300, height=220, fg_color="gray", corner_radius=10)
+image_label.pack(pady=10)
+
+frame_info = ctk.CTkFrame(left_frame)
+frame_info.pack(pady=10, fill="x")
+
+name_label = ctk.CTkLabel(frame_info, text="Name: ", font=("Arial", 14, "bold"))
+name_label.pack(pady=10)
+id_label = ctk.CTkLabel(frame_info, text="Student ID: ", font=("Arial", 14, "bold"))
+id_label.pack(pady=10)
+total_label = ctk.CTkLabel(frame_info, text="Total Present: 0", font=("Arial", 14, "bold"))
 total_label.pack(pady=10)
 
 # Attendance Table in Tab 1
@@ -251,45 +356,45 @@ update_student_list()
 add_student_frame = ctk.CTkFrame(tab2)
 add_student_frame.pack(pady=10, padx=10, fill="x")
 
-# Student ID
-ctk.CTkLabel(add_student_frame, text="Student ID:").grid(row=0, column=0, padx=5, pady=5)
-entry_new_id = ctk.CTkEntry(add_student_frame)
-entry_new_id.grid(row=0, column=1, padx=5, pady=5)
-
 # Name
-ctk.CTkLabel(add_student_frame, text="Name:").grid(row=1, column=0, padx=5, pady=5)
+ctk.CTkLabel(add_student_frame, text="Name:").grid(row=0, column=0, padx=5, pady=5)
 entry_new_name = ctk.CTkEntry(add_student_frame)
-entry_new_name.grid(row=1, column=1, padx=5, pady=5)
+entry_new_name.grid(row=0, column=1, padx=5, pady=5)
+
+# Birth Date
+ctk.CTkLabel(add_student_frame, text="Birth Date:").grid(row=1, column=0, padx=5, pady=5)
+entry_birth = DateEntry(add_student_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern="yyyy-mm-dd")
+entry_birth.grid(row=1, column=1, padx=5, pady=5)
 
 # Email
-ctk.CTkLabel(add_student_frame, text="Email:").grid(row=2, column=0, padx=5, pady=5)
+ctk.CTkLabel(add_student_frame, text="Email:").grid(row=0, column=4, padx=5, pady=5)
 entry_new_email = ctk.CTkEntry(add_student_frame)
-entry_new_email.grid(row=2, column=1, padx=5, pady=5)
+entry_new_email.grid(row=0, column=5, padx=5, pady=5)
 
 # Contact
-ctk.CTkLabel(add_student_frame, text="Contact:").grid(row=3, column=0, padx=5, pady=5)
+ctk.CTkLabel(add_student_frame, text="Contact:").grid(row=1, column=4, padx=5, pady=5)
 entry_new_contact = ctk.CTkEntry(add_student_frame)
-entry_new_contact.grid(row=3, column=1, padx=5, pady=5)
+entry_new_contact.grid(row=1, column=5, padx=5, pady=5)
 
-# Add Student Button
-ctk.CTkButton(add_student_frame, text="Add Student", command=add_student).grid(row=4, columnspan=2, pady=10)
+ctk.CTkButton(add_student_frame, text="Add Student", command=add_student, fg_color="green", corner_radius=15).grid(row=4, column=1, columnspan=2, pady=10)
+ctk.CTkButton(add_student_frame, text="Delete Selected Student", command=delete_student, fg_color="red", corner_radius=15).grid(row=4, column=4, columnspan=2, pady=10)
 
-# Delete Selected Student Button
-ctk.CTkButton(add_student_frame, text="Delete Selected Student", command=delete_student, fg_color="red", corner_radius=20).grid(row=5, columnspan=2, pady=10)
+media_frame = ctk.CTkFrame(tab2)
+media_frame.pack(pady=10, padx=10, fill="both", expand=True)
 
-# QR Code Generation Section in Tab 2
-qr_frame = ctk.CTkFrame(tab2)
-qr_frame.pack(pady=10, padx=10, fill="both", expand=True)
+media_left_frame = ctk.CTkFrame(media_frame)
+media_left_frame.pack(side="left", pady=10, padx=10, fill="both", expand=True)
 
-# Center the QR Code Section
-qr_inner_frame = ctk.CTkFrame(qr_frame)
-qr_inner_frame.pack(pady=10, padx=10, fill="both", expand=True)
+media_right_frame = ctk.CTkFrame(media_frame)
+media_right_frame.pack(side="right", pady=10, padx=10, fill="both", expand=True)
 
-ctk.CTkLabel(qr_inner_frame, text="Generated QR Code", font=("Arial", 14, "bold")).pack(pady=5)
-
-# QR Preview Label
-qr_label = ctk.CTkLabel(qr_inner_frame, text="QR Preview", width=150, height=150, fg_color="gray", corner_radius=10)
+ctk.CTkLabel(media_right_frame, text="Generated QR Code", font=("Arial", 14, "bold")).pack(pady=5)
+qr_label = ctk.CTkLabel(media_right_frame, text="QR Preview", width=200, height=200, fg_color="gray", corner_radius=10)
 qr_label.pack(pady=10)
+
+ctk.CTkLabel(media_left_frame, text="Captured Image", font=("Arial", 14, "bold")).pack(pady=5)
+img_label = ctk.CTkLabel(media_left_frame, text="img preview", width=200, height=200, fg_color="gray", corner_radius=10)
+img_label.pack(pady=10)
 
 # Attendance Report in Tab 3 (unchanged)
 report_frame = ctk.CTkFrame(tab3)
