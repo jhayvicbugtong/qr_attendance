@@ -11,11 +11,13 @@ import qrcode
 from PIL import Image, ImageTk
 from pyzbar.pyzbar import decode
 from tkcalendar import DateEntry
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 def connect_db():
     return mysql.connector.connect(
         host="localhost",
-        port=3306,
+        port=3308,
         user="root",
         password="",
         database="qr_attendance_db"
@@ -180,6 +182,10 @@ def scan_qr():
         camera_label.configure(image=img_tk)
         root.after(10, update_frame)
         view_attendance()
+        plot_graph(frame3)
+        show_top_absentees()
+        update_attendance_report()
+        plot_attendance_pie(frame4)
 
     update_frame()
 
@@ -223,6 +229,17 @@ WHERE a.rn = 1
     db.close()
     return df
 
+def fetch_report(mydb, query):
+    try:
+        df = pd.read_sql(query, mydb)
+        return df
+    except mysql.connector.Error as err:
+        messagebox.showerror("Database Error", f"Error fetching attendance: {err}")
+        return None
+    finally:
+        if mydb.is_connected():
+            mydb.close()
+
 def add_student():
     date_birth = entry_birth.get_date().strftime("%Y-%m-%d")
     name = entry_new_name.get().strip()
@@ -254,7 +271,6 @@ def add_student():
         cursor.close()
         db.close()
 
-
 def delete_student():
     selected_item = student_tree.selection()
     if not selected_item:
@@ -275,7 +291,121 @@ def delete_student():
     finally:
         db.close()
 
-# UI Setup
+def plot_graph(frame):
+    db = connect_db()
+    query = """
+    WITH latest_action AS (
+        SELECT student_id, DATE(scan_time) AS attendance_date, action,
+               ROW_NUMBER() OVER (PARTITION BY student_id, DATE(scan_time) ORDER BY scan_time DESC) AS rn
+        FROM attendance
+    )
+    SELECT a.attendance_date, COUNT(a.student_id) AS attendance_count
+    FROM latest_action a
+    WHERE a.rn = 1 
+      AND a.action = 'Time In'
+      AND a.attendance_date BETWEEN DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY) 
+                               AND DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 6 DAY)
+    GROUP BY a.attendance_date
+    ORDER BY a.attendance_date ASC;
+    """
+    cursor = db.cursor()
+    cursor.execute(query)
+
+    data = cursor.fetchall()
+    df = pd.DataFrame(data, columns=["attendance_date", "attendance_count"])
+
+    cursor.close()
+    db.close()
+    df["attendance_date"] = pd.to_datetime(df["attendance_date"], errors="coerce")
+    df["attendance_count"] = pd.to_numeric(df["attendance_count"], errors="coerce")
+    df = df.dropna()
+
+    fig, ax = plt.subplots(figsize=(2, 1))
+
+    fig.patch.set_facecolor("black")
+    ax.set_facecolor("black")
+
+    ax.plot(df["attendance_date"], df["attendance_count"], marker="o", linestyle="-", color="cyan", label="Attendance")
+
+    ax.set_xlabel("Date", color="white", fontsize=6)
+    ax.set_ylabel("Attendance Count", color="white", fontsize=6)
+    ax.set_title("Weekly Attendance Trend", color="white", fontsize=7)
+    ax.tick_params(axis="x", colors="white", rotation=45, labelsize=6)
+    ax.tick_params(axis="y", colors="white", labelsize=6)
+
+    if not df.empty:
+        ax.set_xticks(df["attendance_date"])
+        ax.set_yticks(range(0, int(df["attendance_count"].max()) + 1, 1))
+    else:
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    ax.grid(color="gray", linestyle="--", linewidth=0.5, alpha=0.5)
+    ax.legend(facecolor="black", edgecolor="white", labelcolor="white", fontsize=6, loc="upper left")
+
+    canvas = FigureCanvasTkAgg(fig, master=frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+
+def plot_attendance_pie(frame):
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+
+        query = """
+        WITH latest_action AS (
+            SELECT 
+                student_id, 
+                DATE(scan_time) AS attendance_date, 
+                action,
+                ROW_NUMBER() OVER (PARTITION BY student_id, DATE(scan_time) ORDER BY scan_time DESC) AS rn
+            FROM attendance
+        )
+        SELECT 
+            (SELECT COUNT(*) FROM students) AS total_students, 
+            COUNT(CASE WHEN la.rn = 1 AND la.action = 'Time In' THEN la.student_id END) AS present_count
+        FROM latest_action la
+        WHERE la.attendance_date = CURDATE();
+        """
+
+        cursor.execute(query)
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        total_students = int(result[0]) if result and result[0] is not None else 0
+        present_count = int(result[1]) if result and result[1] is not None else 0
+        absent_count = total_students - present_count
+
+        if total_students == 0:
+            present_count, absent_count = 1, 1  # Avoid empty pie chart error
+
+        labels = ["Present", "Absent"]
+        sizes = [present_count, absent_count]
+        colors = ["green", "red"]
+
+        fig, ax = plt.subplots(figsize=(2, 2))
+        fig.patch.set_facecolor("black")
+        ax.set_facecolor("black")
+
+        wedges, texts, autotexts = ax.pie(
+            sizes, labels=labels, autopct="%1.1f%%", colors=colors,
+            textprops={"color": "white"}, startangle=90, wedgeprops={"edgecolor": "white"}
+        )
+
+        for text in texts + autotexts:
+            text.set_fontsize(8)
+
+        ax.set_title("Today's Attendance", color="white", fontsize=10)
+
+        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    except Exception as err:
+        print(f"Error: {err}")
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
@@ -306,7 +436,7 @@ frame_buttons = ctk.CTkFrame(left_frame)
 frame_buttons.pack(pady=10, fill="x")
 
 ctk.CTkButton(frame_buttons, text="Scan QR Code", command=scan_qr, fg_color="green", corner_radius=20).pack(pady=3, padx=5, fill="x")
-ctk.CTkButton(frame_buttons, text="View Attendance", command=lambda: (view_attendance(), fetch_attendance_report(),update_attendance_report()), fg_color="orange", corner_radius=20).pack(pady=3, padx=5, fill="x")
+ctk.CTkButton(frame_buttons, text="View Attendance", command=lambda: (view_attendance(), update_attendance_report()), fg_color="orange", corner_radius=20).pack(pady=3, padx=5, fill="x")
 
 image_label = ctk.CTkLabel(left_frame, text="img", width=300, height=220, fg_color="gray", corner_radius=10)
 image_label.pack(pady=10)
@@ -396,12 +526,20 @@ ctk.CTkLabel(media_left_frame, text="Captured Image", font=("Arial", 14, "bold")
 img_label = ctk.CTkLabel(media_left_frame, text="img preview", width=200, height=200, fg_color="gray", corner_radius=10)
 img_label.pack(pady=10)
 
-# Attendance Report in Tab 3 (unchanged)
-report_frame = ctk.CTkFrame(tab3)
-report_frame.pack(fill="both", expand=True, padx=10, pady=10)
+# Create a container frame for better layout management
+container = ctk.CTkFrame(tab3)
+container.pack(fill="both", expand=True, padx=10, pady=10)
 
+# Configure a 2x2 grid layout
+container.grid_columnconfigure((0, 1), weight=1)
+container.grid_rowconfigure((0, 1), weight=1)
+
+# Frame 1: Attendance Report (Top-Left)
+frame1 = ctk.CTkFrame(container)
+frame1.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+ctk.CTkLabel(frame1, text="Full Attendance Report", font=("Arial", 14, "bold")).pack(pady=5)
 columns = ("Student ID", "Name", "Email", "Contact")
-report_tree = ttk.Treeview(report_frame, columns=columns, show="headings", height=10)
+report_tree = ttk.Treeview(frame1, columns=columns, show="headings", height=10)
 for col in columns:
     report_tree.heading(col, text=col)
     report_tree.column(col, anchor="center")
@@ -414,5 +552,54 @@ def update_attendance_report():
     for row in data.itertuples(index=False):
         report_tree.insert("", "end", values=row)
         total_label.configure(text=f"Total Present: {len(data)}")
+
 update_attendance_report()
+
+# Frame 2: Empty (Top-Right)
+frame2 = ctk.CTkFrame(container)
+frame2.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+ctk.CTkLabel(frame2, text="Top Absentees", font=("Arial", 14, "bold")).pack(pady=5)
+
+def update_report_table(query):
+    mydb = connect_db()
+    if mydb:
+        data = fetch_report(mydb, query)
+        if data is not None:
+            for item in absent_tree.get_children():
+                absent_tree.delete(item)
+            for row in data.itertuples(index=False):
+                absent_tree.insert("", "end", values=row)
+
+def show_top_absentees():
+    query = """
+    SELECT s.name
+           COUNT(DISTINCT DATE(a.scan_time)) AS days_present,
+           (30 - COUNT(DISTINCT DATE(a.scan_time))) AS absent_count,
+           ((30 - COUNT(DISTINCT DATE(a.scan_time))) / 30) * 100 AS absence_percentage
+    FROM attendance a
+    JOIN students s ON a.student_id = s.student_id
+    WHERE MONTH(a.scan_time) = MONTH(CURDATE()) AND YEAR(a.scan_time) = YEAR(CURDATE())
+    GROUP BY s.name, a.student_id
+    ORDER BY absent_count DESC
+    LIMIT 5;
+    """
+    update_report_table(query)
+
+frame3 = ctk.CTkFrame(container)
+frame3.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
+columns = ("Name", "Present", "Absent", "Rate")
+absent_tree = ttk.Treeview(frame2, columns=columns, show="headings", height=10)
+for col in columns:
+    absent_tree.heading(col, text=col)
+    absent_tree.column(col, anchor="center")
+absent_tree.pack(fill="both", expand=True)
+
+plot_graph(frame3)
+
+frame4 = ctk.CTkFrame(container)
+frame4.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
+
+plot_attendance_pie(frame4)
+
 root.mainloop()
