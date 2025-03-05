@@ -164,7 +164,7 @@ def scan_qr():
                 img_path = img_record[0]
                 try:
                     img = Image.open(img_path)
-                    img = img.resize((150, 150))  # Adjust size as needed
+                    img = img.resize((150, 150))
                     img_tk = ImageTk.PhotoImage(img)
 
                     image_label.img_tk = img_tk
@@ -181,13 +181,13 @@ def scan_qr():
         camera_label.img_tk = img_tk
         camera_label.configure(image=img_tk)
         root.after(10, update_frame)
-        view_attendance()
-        plot_graph(frame3)
-        show_top_absentees()
-        update_attendance_report()
-        plot_attendance_pie(frame4)
 
-    update_frame()
+    update_frame()#
+    view_attendance()#
+    reload_graph(frame3)#
+    show_top_absentees()#
+    update_attendance_report()#
+    reload_attendance_pie(frame4)#
 
 def view_attendance():
     db = connect_db()
@@ -346,7 +346,10 @@ def plot_graph(frame):
     canvas = FigureCanvasTkAgg(fig, master=frame)
     canvas.draw()
     canvas.get_tk_widget().pack(fill="both", expand=True)
-
+def reload_graph(frame):
+    for widget in frame.winfo_children():
+        widget.destroy()
+    plot_graph(frame)
 
 def plot_attendance_pie(frame):
     try:
@@ -405,6 +408,11 @@ def plot_attendance_pie(frame):
 
     except Exception as err:
         print(f"Error: {err}")
+def reload_attendance_pie(frame):
+    for widget in frame.winfo_children():
+        widget.destroy()
+
+    plot_attendance_pie(frame)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -413,13 +421,22 @@ root = ctk.CTk()
 root.title("QR Code Attendance System")
 root.geometry("900x500")
 
-# Tab Configuration
 tabview = ctk.CTkTabview(root)
 tabview.pack(expand=True, fill="both", padx=10, pady=10)
 
 tab1 = tabview.add("Attendance System")
 tab2 = tabview.add("List of Students")
 tab3 = tabview.add("Full Attendance Report")
+
+top_frame = ctk.CTkFrame(root, fg_color="transparent")
+top_frame.pack(fill="x", padx=10, pady=10)
+
+button = ctk.CTkButton(top_frame, text="Refresh", command=lambda: (view_attendance(),
+    reload_graph(frame3),
+    show_top_absentees(),
+    update_attendance_report(),
+    reload_attendance_pie(frame4)))
+button.pack(side="right", padx=10)
 
 # Main Frame in Tab 1
 main_frame = ctk.CTkFrame(tab1)
@@ -572,16 +589,17 @@ def update_report_table(query):
 
 def show_top_absentees():
     query = """
-    SELECT s.name
-           COUNT(DISTINCT DATE(a.scan_time)) AS days_present,
-           (30 - COUNT(DISTINCT DATE(a.scan_time))) AS absent_count,
-           ((30 - COUNT(DISTINCT DATE(a.scan_time))) / 30) * 100 AS absence_percentage
-    FROM attendance a
-    JOIN students s ON a.student_id = s.student_id
-    WHERE MONTH(a.scan_time) = MONTH(CURDATE()) AND YEAR(a.scan_time) = YEAR(CURDATE())
-    GROUP BY s.name, a.student_id
-    ORDER BY absent_count DESC
-    LIMIT 5;
+            SELECT s.name,
+               COUNT(DISTINCT DATE(a.scan_time)) AS days_present,
+               (30 - COUNT(DISTINCT DATE(a.scan_time))) AS absent_count,
+               ((30 - COUNT(DISTINCT DATE(a.scan_time))) / 30) * 100 AS absence_percentage
+        FROM attendance a
+        JOIN students s ON a.student_id = s.student_id
+        WHERE MONTH(a.scan_time) = MONTH(CURDATE()) 
+          AND YEAR(a.scan_time) = YEAR(CURDATE())
+        GROUP BY s.name, a.student_id
+        ORDER BY absent_count DESC
+        LIMIT 5;
     """
     update_report_table(query)
 
@@ -594,7 +612,7 @@ for col in columns:
     absent_tree.heading(col, text=col)
     absent_tree.column(col, anchor="center")
 absent_tree.pack(fill="both", expand=True)
-
+show_top_absentees()
 plot_graph(frame3)
 
 frame4 = ctk.CTkFrame(container)
